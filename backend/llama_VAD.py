@@ -2,13 +2,13 @@ import os
 import asyncio
 from dotenv import load_dotenv
 from huggingface_hub import InferenceClient
+from loguru import logger
 
 # Load environment variables
 load_dotenv()
 
 # Configuration
 API_KEY = os.getenv("HUGGINGFACE_API_KEY")
-print(API_KEY)
 MODEL = "meta-llama/Llama-3.3-70B-Instruct"
 
 # System prompt
@@ -66,7 +66,7 @@ async def query_model(user_prompt, vad):
         return f"[ERROR] API call failed: {e}"
 
 async def chat():
-    print("Starting 7-turn emotional chat with predefined inputs...\n")
+    logger.info("Starting 7-turn emotional chat with predefined inputs...\n")
     example_inputs = [
         ("I feel really anxious about my exams tomorrow.", [0.2, 0.7, 0.3]),
         ("I think my best friend is ignoring me.", [0.3, 0.6, 0.2]),
@@ -78,9 +78,9 @@ async def chat():
     ]
     
     for i, (user_prompt, vad) in enumerate(example_inputs):
-        print(f"\nYou ({i+1}/7): {user_prompt} | VAD: {vad}")
+        logger.info(f"\nYou ({i+1}/7): {user_prompt} | VAD: {vad}")
         reply = await query_model(user_prompt, vad)
-        print("\nAI Response:\n", reply, "\n")
+        logger.info("\nAI Response:\n", reply, "\n")
 
 # Main entry for asyncio to run
 if __name__ == "__main__":

@@ -2,7 +2,10 @@ interface AudioProcessorOptions {
   onProcessingStart?: () => void;
   onProcessingEnd?: () => void;
   onError?: (error: Error) => void;
-  onMessage?: (data: any) => void;
+  onMessage?: (data: {
+    transcription: string;
+    vad_scores: { arousal: number; dominance: number; valence: number };
+  }) => void;
 }
 
 export class AudioRecorder {
@@ -44,16 +47,18 @@ export class AudioRecorder {
     try {
       this.options.onProcessingStart?.();
       const audioBlob = new Blob(this.audioChunks, { type: "audio/wav" });
+
+      // Ensure proper WAV format by creating a new File with explicit type
       const file = new File([audioBlob], `recording_${Date.now()}.wav`, {
         type: "audio/wav",
       });
 
       // Create FormData and append the file
       const formData = new FormData();
-      formData.append("audio", file);
+      formData.append("file", file);
 
       // Send the file to the backend
-      const response = await fetch("http://localhost:8005/api/audio", {
+      const response = await fetch("http://localhost:8000/process_audio/", {
         method: "POST",
         body: formData,
       });

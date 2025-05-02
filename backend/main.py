@@ -9,14 +9,15 @@ from transformers import (
     Wav2Vec2Model,
     Wav2Vec2PreTrainedModel,
 )
-
+from fastapi.middleware.cors import CORSMiddleware
 import asyncio
-import librosa
-import io
+
 import soundfile as sf
 from concurrent.futures import ThreadPoolExecutor
 from loguru import logger
 from typing import Dict, Any
+import tempfile
+import os
 from utils import load_and_preprocess_audio
 
 WHISPER_MODEL_SIZE = "base"
@@ -25,6 +26,17 @@ TARGET_SAMPLE_RATE = 16000
 
 app = fastapi.FastAPI()
 
+origins = [
+    "http://localhost:3000"
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,           
+    allow_credentials=True,
+    allow_methods=["*"],             
+    allow_headers=["*"],              
+)
 whisper_model = None
 vad_processor: Wav2Vec2Processor = None 
 vad_model: Wav2Vec2PreTrainedModel = (
@@ -213,9 +225,24 @@ async def process_audio_endpoint(
     try:
         file_content = await file.read()
         logger.info(f"Read {len(file_content)} bytes from '{file.filename}'.")
-        audio_np = await load_and_preprocess_audio(
+        # Create temporary file with .wav extension
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            temp_file.write(file_content)
+            temp_file_path = temp_file.name
+            logger.info("Added a checkpoint that atleasst 1 byte was written.")
+            logger.info(f"Temporary file created: {temp_file_path}")
+        
+        try:
+            # Process the saved temporary file
+            audio_np = await load_and_preprocess_audio(
             file_content, target_sr=TARGET_SAMPLE_RATE
-        )
+            )
+            logger.info(f"Audio processed successfully from temporary file: {temp_file_path}")
+        finally:
+            # Clean up the temporary file
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+                logger.debug(f"Temporary file removed: {temp_file_path}")
 
         loop = asyncio.get_running_loop()
         logger.info("Scheduling transcription and VAD analysis tasks in parallel...")
@@ -275,6 +302,37 @@ async def process_audio_endpoint(
             detail=f"An internal server error occurred: {e}",
         )
 
+@app.post("/health_check/")
+async def store_audio(file: fastapi.UploadFile = fastapi.File(...)):
+    """Endpoint to store uploaded audio file as .wav in the current directory."""
+    try:
+        if not file.content_type or not file.content_type.startswith("audio/"):
+            raise fastapi.HTTPException(
+                status_code=fastapi.status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid file type '{file.content_type}'. Please upload an audio file."
+            )
+        
+        # Read file content
+        file_content = await file.read()
+        logger.info(f"Read {len(file_content)} bytes from '{file.filename}'")
+        
+        # Generate filename based on original filename but ensure it's a .wav
+        base_name = os.path.splitext(file.filename)[0]
+        output_path = f"{base_name}.wav"
+        
+        # Write content to file
+        with open(output_path, "wb") as f:
+            f.write(file_content)
+        
+        logger.info(f"Audio file saved successfully to {output_path}")
+        return {"filename": output_path, "status": "success", "size": len(file_content)}
+    
+    except Exception as e:
+        logger.error(f"Error storing audio file: {e}", exc_info=True)
+        raise fastapi.HTTPException(
+            status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to store audio file: {str(e)}"
+        )
 
 if __name__ == "__main__":
     logger.info("Starting Uvicorn server directly...")
