@@ -1,70 +1,57 @@
 #!/usr/bin/env python3
-import os
-import soundfile as sf
-import torch
+"""
+Module providing a simple function to run inference with Nari Labs' Dia TTS model.
+Installation:
+    pip install git+https://github.com/nari-labs/dia.git
+"""
 from dia.model import Dia
 
-# 1) Load the Dia model once at import
-MODEL = Dia.from_pretrained("nari-labs/Dia-1.6B")
-
-
-def infer_tts(
+def infer_dia_tts(
     text: str,
     output_path: str = "output.wav",
-    audio_prompt: str = None,
-    sample_rate: int = 22050,
-    **generate_kwargs
-) -> str:
+    model_id: str = "nari-labs/Dia-1.6B",
+    dtype: str = "float16",
+    use_compile: bool = True
+) -> None:
     """
-    Generate speech from text using the Dia TTS model.
+    Generate speech from input text using the specified Dia TTS model and save to a file.
 
     Args:
-        text: Transcript to synthesize.
-        output_path: Where to write the .wav file.
-        audio_prompt: Optional path to a .wav file to condition voice/style.
-        sample_rate: Sampling rate for the output file.
-        generate_kwargs: Extra generation parameters (e.g., temperature).
+        text: Input string with speaker tags ([S1], [S2]).
+        output_path: File path to save the generated audio.
+        model_id: Model identifier (e.g., "nari-labs/Dia-1.6B").
+        dtype: Data type for model weights: "float16", "float32", or "bfloat16".
+        use_compile: Whether to enable torch.compile optimization.
 
     Returns:
-        The filepath of the written WAV.
+        None. Audio is written to output_path.
     """
-    # If an audio prompt is given, load it to a NumPy array
-    if audio_prompt:
-        prompt_wav, _ = sf.read(audio_prompt)
-        wav = MODEL.generate(text, audio_prompt=prompt_wav, **generate_kwargs)
-    else:
-        wav = MODEL.generate(text, **generate_kwargs)
-
-    # Ensure the directory exists
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    # Write the WAV file
-    sf.write(output_path, wav, sample_rate)
-    return output_path
-
-
-def main():
-    """
-    Simple test harness for infer_tts().
-    Modify the sample_text or parameters below to try different inputs.
-    """
-    sample_text = "[S1] Hello, world! (laughs) [S2] Hi there! Nice to meet you."
-    print("Generating speech for:", sample_text)
-    out_file = "demo_output.wav"
-
-    # Optional: if you have a reference wav for voice cloning, set audio_prompt to its path
-    audio_prompt = None  # e.g., "actor_reference.wav"
-
-    # Invoke the inference function
-    generated = infer_tts(
-        text=sample_text,
-        output_path=out_file,
-        audio_prompt=audio_prompt,
-        temperature=0.7,    # you can tweak temperature, max_length, etc.
+    # Load pretrained model
+    model = Dia.from_pretrained(
+        model_id,
+        compute_dtype=dtype
     )
 
-    print("✔ Generated audio at:", generated)
+    # Generate audio tensor
+    audio = model.generate(
+        text,
+        use_torch_compile=use_compile,
+        verbose=True
+    )
+
+    # Save to file
+    model.save_audio(output_path, audio)
 
 
+# Sample usage (for testing/importing elsewhere)
 if __name__ == "__main__":
-    main()
+    sample_text = "Hello, world! (laughs) Hi there! Nice to meet you."
+    infer_dia_tts(
+        text=sample_text,
+        output_path="sample_output.wav",
+        model_id="nari-labs/Dia-1.6B",
+        dtype="float16",
+        use_compile=True
+    )
+    print("Inference complete. Audio saved to sample_output.wav")
 
