@@ -22,7 +22,7 @@ from typing import Dict, Any
 # --- Basic Configuration ---
 WHISPER_MODEL_SIZE = "base"
 # Ensure this matches the model you intend to use (VAD one)
-VAD_MODEL_ID = "audeering/wav2vec2-large-robust-12-ft-valence-arousal-dominance-msp-dim"
+VAD_MODEL_ID = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
 TARGET_SAMPLE_RATE = 16000
 
 # --- Logging Setup ---
