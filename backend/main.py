@@ -2,9 +2,9 @@ import fastapi
 import uvicorn
 import whisper
 import torch
-import torch.nn as nn  
+import torch.nn as nn
 import numpy as np
-from transformers import ( 
+from transformers import (
     Wav2Vec2Processor,
     Wav2Vec2Model,
     Wav2Vec2PreTrainedModel,
@@ -19,6 +19,9 @@ from typing import Dict, Any
 import tempfile
 import os
 from utils import load_and_preprocess_audio
+from llama_VAD import query_model
+from dia_tts import query as tts_query
+import requests
 
 WHISPER_MODEL_SIZE = "base"
 VAD_MODEL_ID = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
@@ -26,22 +29,18 @@ TARGET_SAMPLE_RATE = 16000
 
 app = fastapi.FastAPI()
 
-origins = [
-    "http://localhost:3000"
-]
+origins = ["http://localhost:3000"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,           
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],             
-    allow_headers=["*"],              
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 whisper_model = None
-vad_processor: Wav2Vec2Processor = None 
-vad_model: Wav2Vec2PreTrainedModel = (
-    None  
-)
+vad_processor: Wav2Vec2Processor = None
+vad_model: Wav2Vec2PreTrainedModel = None
 device = "cuda" if torch.cuda.is_available() else "cpu"
 executor = ThreadPoolExecutor()
 
@@ -115,13 +114,9 @@ def load_models():
         logger.info("Whisper model loaded successfully.")
 
         logger.info(f"Loading VAD model: {VAD_MODEL_ID} using specified classes")
-        vad_processor = Wav2Vec2Processor.from_pretrained(
-            VAD_MODEL_ID
-        )
+        vad_processor = Wav2Vec2Processor.from_pretrained(VAD_MODEL_ID)
 
-        vad_model = EmotionModel.from_pretrained(VAD_MODEL_ID).to(
-            device
-        )
+        vad_model = EmotionModel.from_pretrained(VAD_MODEL_ID).to(device)
         logger.info(
             "VAD processor and model loaded successfully using specified classes."
         )
@@ -129,6 +124,7 @@ def load_models():
     except Exception as e:
         logger.error(f"Fatal error loading models: {e}", exc_info=True)
         raise RuntimeError(f"Failed to load models: {e}")
+
 
 def run_whisper_transcription(audio_np: np.ndarray) -> str:
     if whisper_model is None:
@@ -159,11 +155,9 @@ def run_vad_analysis(audio_np: np.ndarray, sampling_rate: int) -> Dict[str, floa
             audio_np,
             sampling_rate=sampling_rate,
             return_tensors="pt",
-            padding=True, 
+            padding=True,
         )
-        input_values = processed_inputs.input_values.to(
-            device
-        ) 
+        input_values = processed_inputs.input_values.to(device)
 
         attention_mask = processed_inputs.get("attention_mask")
         if attention_mask is not None:
@@ -184,9 +178,7 @@ def run_vad_analysis(audio_np: np.ndarray, sampling_rate: int) -> Dict[str, floa
                 "error": f"VAD model output dimension mismatch. Expected (1, 3), got {logits.shape}"
             }
 
-        scores = (
-            logits[0].cpu().numpy()
-        )
+        scores = logits[0].cpu().numpy()
 
         results = {
             "arousal": float(scores[0]),  # 0 = arousal
@@ -225,24 +217,18 @@ async def process_audio_endpoint(
     try:
         file_content = await file.read()
         logger.info(f"Read {len(file_content)} bytes from '{file.filename}'.")
-        # Create temporary file with .wav extension
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-            temp_file.write(file_content)
-            temp_file_path = temp_file.name
-            logger.info("Added a checkpoint that atleasst 1 byte was written.")
-            logger.info(f"Temporary file created: {temp_file_path}")
-        
+
         try:
-            # Process the saved temporary file
             audio_np = await load_and_preprocess_audio(
-            file_content, target_sr=TARGET_SAMPLE_RATE
+                file_content, target_sr=TARGET_SAMPLE_RATE
             )
-            logger.info(f"Audio processed successfully from temporary file: {temp_file_path}")
-        finally:
-            # Clean up the temporary file
-            if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
-                logger.debug(f"Temporary file removed: {temp_file_path}")
+            logger.info(f"Audio processed successfully")
+        except Exception as e:
+            logger.error(f"Error processing audio: {e}")
+            raise fastapi.HTTPException(
+                status_code=fastapi.status.HTTP_400_BAD_REQUEST,
+                detail=f"Error processing audio: {e}",
+            )
 
         loop = asyncio.get_running_loop()
         logger.info("Scheduling transcription and VAD analysis tasks in parallel...")
@@ -272,10 +258,66 @@ async def process_audio_endpoint(
             if not isinstance(vad_result, dict):
                 vad_result = {"error": f"VAD Analysis Error: {vad_result}"}
 
+        # Get emotional response from Llama
+        emotional_response = await query_model(
+            transcription_result,
+            [
+                vad_result.get("valence", 0.5),
+                vad_result.get("arousal", 0.5),
+                vad_result.get("dominance", 0.5),
+            ],
+        )
+
+        # Extract all sentences from the emotional response
+        import json
+
+        try:
+            response_data = json.loads(emotional_response)
+            sentences = []
+            for sentence_key in response_data.get("response", {}):
+                sentence_data = response_data["response"][sentence_key]
+                sentences.append(sentence_data["text"])
+
+            # Combine all sentences
+            combined_text = " ".join(sentences)
+
+            # Generate TTS audio
+            tts_result = tts_query({"text": combined_text})
+
+            # Save the audio file with incrementing number if needed
+            base_filename = "output.wav"
+            counter = 1
+            while os.path.exists(base_filename):
+                base_filename = f"output({counter}).wav"
+                counter += 1
+
+            if (
+                "audio" in tts_result
+                and isinstance(tts_result["audio"], dict)
+                and "url" in tts_result["audio"]
+            ):
+                audio_url = tts_result["audio"]["url"]
+                audio_response = requests.get(audio_url)
+
+                if audio_response.status_code == 200:
+                    with open(base_filename, "wb") as f:
+                        f.write(audio_response.content)
+                    logger.info(f"Saved audio as {base_filename}")
+                else:
+                    logger.error(f"Failed to download audio from URL: {audio_url}")
+            else:
+                logger.error("Unexpected TTS response format")
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing emotional response: {e}")
+            emotional_response = "Error processing emotional response"
+
         return {
             "filename": file.filename,
             "transcription": transcription_result,
             "vad_scores": vad_result,
+            "emotional_response": emotional_response,
+            "tts_file": base_filename,
         }
 
     except ValueError as ve:
@@ -302,37 +344,13 @@ async def process_audio_endpoint(
             detail=f"An internal server error occurred: {e}",
         )
 
-@app.post("/health_check/")
-async def store_audio(file: fastapi.UploadFile = fastapi.File(...)):
-    """Endpoint to store uploaded audio file as .wav in the current directory."""
-    try:
-        if not file.content_type or not file.content_type.startswith("audio/"):
-            raise fastapi.HTTPException(
-                status_code=fastapi.status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid file type '{file.content_type}'. Please upload an audio file."
-            )
-        
-        # Read file content
-        file_content = await file.read()
-        logger.info(f"Read {len(file_content)} bytes from '{file.filename}'")
-        
-        # Generate filename based on original filename but ensure it's a .wav
-        base_name = os.path.splitext(file.filename)[0]
-        output_path = f"{base_name}.wav"
-        
-        # Write content to file
-        with open(output_path, "wb") as f:
-            f.write(file_content)
-        
-        logger.info(f"Audio file saved successfully to {output_path}")
-        return {"filename": output_path, "status": "success", "size": len(file_content)}
-    
-    except Exception as e:
-        logger.error(f"Error storing audio file: {e}", exc_info=True)
-        raise fastapi.HTTPException(
-            status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to store audio file: {str(e)}"
-        )
+
+@app.get("/healthcheck/")
+def healthcheck() -> Dict[str, str]:
+    """Health check endpoint to verify server status."""
+    logger.info("Health check endpoint accessed.")
+    return {"status": "ok"}
+
 
 if __name__ == "__main__":
     logger.info("Starting Uvicorn server directly...")

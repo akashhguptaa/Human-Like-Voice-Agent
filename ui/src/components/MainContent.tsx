@@ -61,7 +61,7 @@ export const MainContent = () => {
           const formData = new FormData();
           formData.append("file", file);
 
-          const response = await fetch("http://localhost:8000/health_check/", {
+          const response = await fetch("http://localhost:8000/process_audio/", {
             method: "POST",
             body: formData,
           });
