@@ -10,6 +10,7 @@ from transformers import (
     Wav2Vec2PreTrainedModel,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import asyncio
 
 import soundfile as sf
@@ -20,7 +21,7 @@ import tempfile
 import os
 from utils import load_and_preprocess_audio
 from llama_VAD import query_model
-from dia_tts import query as tts_query
+from dia_tts import get_voices, text_to_speech_vad
 import requests
 
 WHISPER_MODEL_SIZE = "base"
@@ -28,6 +29,9 @@ VAD_MODEL_ID = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
 TARGET_SAMPLE_RATE = 16000
 
 app = fastapi.FastAPI()
+
+# Mount the static directory for serving audio files
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 origins = ["http://localhost:3000"]
 
@@ -268,56 +272,37 @@ async def process_audio_endpoint(
             ],
         )
 
-        # Extract all sentences from the emotional response
-        import json
+        # Generate TTS audio from Llama response
+        voices = get_voices()
+        if not voices:
+            raise fastapi.HTTPException(
+                status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No voices available for TTS",
+            )
 
-        try:
-            response_data = json.loads(emotional_response)
-            sentences = []
-            for sentence_key in response_data.get("response", {}):
-                sentence_data = response_data["response"][sentence_key]
-                sentences.append(sentence_data["text"])
+        voice_id = voices[0]["voice_id"]
+        base_filename = "output.wav"
+        counter = 1
+        while os.path.exists(os.path.join("static", base_filename)):
+            base_filename = f"output({counter}).wav"
+            counter += 1
 
-            # Combine all sentences
-            combined_text = " ".join(sentences)
+        tts_result = text_to_speech_vad(
+            emotional_response, voice_id, os.path.join("static", base_filename)
+        )
 
-            # Generate TTS audio
-            tts_result = tts_query({"text": combined_text})
-
-            # Save the audio file with incrementing number if needed
-            base_filename = "output.wav"
-            counter = 1
-            while os.path.exists(base_filename):
-                base_filename = f"output({counter}).wav"
-                counter += 1
-
-            if (
-                "audio" in tts_result
-                and isinstance(tts_result["audio"], dict)
-                and "url" in tts_result["audio"]
-            ):
-                audio_url = tts_result["audio"]["url"]
-                audio_response = requests.get(audio_url)
-
-                if audio_response.status_code == 200:
-                    with open(base_filename, "wb") as f:
-                        f.write(audio_response.content)
-                    logger.info(f"Saved audio as {base_filename}")
-                else:
-                    logger.error(f"Failed to download audio from URL: {audio_url}")
-            else:
-                logger.error("Unexpected TTS response format")
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Error parsing emotional response: {e}")
-            emotional_response = "Error processing emotional response"
+        if tts_result["status"] == "error":
+            raise fastapi.HTTPException(
+                status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"TTS generation failed: {tts_result['message']}",
+            )
 
         return {
             "filename": file.filename,
             "transcription": transcription_result,
             "vad_scores": vad_result,
             "emotional_response": emotional_response,
-            "tts_file": base_filename,
+            "tts_file": f"static/{base_filename}",
         }
 
     except ValueError as ve:
@@ -353,6 +338,7 @@ def healthcheck() -> Dict[str, str]:
 
 
 if __name__ == "__main__":
+    logger.info
     logger.info("Starting Uvicorn server directly...")
     load_models()
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -1,5 +1,6 @@
 import os
 import asyncio
+import json
 from dotenv import load_dotenv
 from huggingface_hub import InferenceClient
 from loguru import logger
@@ -34,36 +35,56 @@ Assign a unique VAD score for each sentence reflecting the emotional tone of tha
 Always keep your tone supportive, warm, and understanding.
 """
 
-# Chat history
-chat_history = [{"role": "system", "content": system_prompt.strip()}]
+# Initialize conversation history
+conversation_history = [{"role": "system", "content": system_prompt.strip()}]
+
 
 def add_to_history(role, content):
-    chat_history.append({"role": role, "content": content})
+    conversation_history.append({"role": role, "content": content})
+    # Keep only the last 10 messages to maintain context without growing too large
+    if len(conversation_history) > 10:
+        conversation_history.pop(1)  # Remove the oldest message (after system prompt)
+
 
 async def query_model(user_prompt, vad):
+    # Format the user input with VAD values
     user_input = f"prompt: {user_prompt}, VAD: {vad}"
     add_to_history("user", user_input)
-    
+
     # Initialize the InferenceClient with SambaNova provider
     client = InferenceClient(
         provider="sambanova",
         api_key=API_KEY,
     )
-    
+
     try:
-        # Create the completion
+        # Create the completion with conversation history
         completion = client.chat.completions.create(
             model=MODEL,
-            messages=chat_history,
+            messages=conversation_history,
             max_tokens=512,
         )
-        
+
         # Extract the response
         reply = completion.choices[0].message.content
+
+        # Ensure the response is properly formatted JSON
+        try:
+            # Try to parse the response to validate JSON format
+            json.loads(reply)
+        except json.JSONDecodeError:
+            # If not valid JSON, wrap it in the expected format
+            reply = json.dumps({"response": {"s1": {"text": reply, "vad": vad}}})
+
         add_to_history("assistant", reply)
         return reply
     except Exception as e:
-        return f"[ERROR] API call failed: {e}"
+        error_response = json.dumps(
+            {"response": {"s1": {"text": f"Error: {str(e)}", "vad": [0.5, 0.5, 0.5]}}}
+        )
+        add_to_history("assistant", error_response)
+        return error_response
+
 
 async def chat():
     logger.info("Starting 7-turn emotional chat with predefined inputs...\n")
@@ -76,11 +97,12 @@ async def chat():
         ("I'm nervous about speaking in public tomorrow.", [0.4, 0.8, 0.3]),
         ("I feel hopeful about the future lately.", [0.8, 0.4, 0.7]),
     ]
-    
+
     for i, (user_prompt, vad) in enumerate(example_inputs):
         logger.info(f"\nYou ({i+1}/7): {user_prompt} | VAD: {vad}")
         reply = await query_model(user_prompt, vad)
         logger.info("\nAI Response:\n", reply, "\n")
+
 
 # Main entry for asyncio to run
 if __name__ == "__main__":

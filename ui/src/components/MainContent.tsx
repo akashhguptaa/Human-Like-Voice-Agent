@@ -1,6 +1,6 @@
 import React, { useRef, useState, useCallback } from "react";
 import { motion } from "framer-motion";
-import { Mic, Square } from "lucide-react";
+import { Mic, Square, Play, Pause } from "lucide-react";
 
 interface AudioResponse {
   transcription: string;
@@ -9,13 +9,18 @@ interface AudioResponse {
     dominance: number;
     valence: number;
   };
+  tts_file: string;
 }
 
 export const MainContent = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [transcription, setTranscription] = useState<string>("");
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const startRecording = useCallback(async () => {
     try {
@@ -27,7 +32,6 @@ export const MainContent = () => {
         },
       });
 
-      // Use webm format for recording as it's better supported
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType: "audio/webm",
         audioBitsPerSecond: 128000,
@@ -46,12 +50,10 @@ export const MainContent = () => {
         try {
           setIsUploading(true);
 
-          // Create audio blob from chunks
           const audioBlob = new Blob(audioChunksRef.current, {
             type: "audio/webm",
           });
 
-          // Convert to WAV format
           const wavBlob = await convertToWav(audioBlob);
 
           const file = new File([wavBlob], `recording_${Date.now()}.wav`, {
@@ -72,6 +74,33 @@ export const MainContent = () => {
 
           const data = await response.json();
           console.log("Received response:", data);
+
+          // Update state with transcription
+          setTranscription(data.transcription);
+
+          // Create a new audio element for streaming
+          const audio = new Audio(`http://localhost:8000/${data.tts_file}`);
+          audioRef.current = audio;
+
+          // Set up event listeners
+          audio.onended = () => {
+            setIsPlaying(false);
+            // Clean up the audio URL after playback
+            if (audioUrl) {
+              URL.revokeObjectURL(audioUrl);
+              setAudioUrl(null);
+            }
+          };
+
+          // Start playing automatically
+          audio
+            .play()
+            .then(() => {
+              setIsPlaying(true);
+            })
+            .catch((error) => {
+              console.error("Error playing audio:", error);
+            });
         } catch (error) {
           console.error("Error processing audio:", error);
         } finally {
@@ -79,14 +108,13 @@ export const MainContent = () => {
         }
       };
 
-      // Request data every second
       mediaRecorder.start(1000);
       setIsRecording(true);
     } catch (error) {
       console.error("Error starting recording:", error);
       setIsRecording(false);
     }
-  }, []);
+  }, [audioUrl]);
 
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && isRecording) {
@@ -97,6 +125,17 @@ export const MainContent = () => {
       setIsRecording(false);
     }
   }, [isRecording]);
+
+  const togglePlayback = useCallback(() => {
+    if (audioRef.current) {
+      if (isPlaying) {
+        audioRef.current.pause();
+      } else {
+        audioRef.current.play();
+      }
+      setIsPlaying(!isPlaying);
+    }
+  }, [isPlaying]);
 
   const handleButtonClick = useCallback(() => {
     if (isRecording) {
@@ -113,31 +152,60 @@ export const MainContent = () => {
         Experience conversations with AI that feel remarkably human
       </p>
 
-      <motion.button
-        className={`mt-8 px-6 py-3 rounded-full text-white font-medium shadow-lg flex items-center gap-2 ${
-          isRecording
-            ? "bg-red-500 hover:bg-red-600"
-            : "bg-gradient-to-r from-blue-400 via-purple-400 to-green-400"
-        }`}
-        whileHover={{ scale: 1.05 }}
-        whileTap={{ scale: 0.95 }}
-        onClick={handleButtonClick}
-        disabled={isUploading}
-      >
-        {isUploading ? (
-          "Processing..."
-        ) : isRecording ? (
-          <>
-            <Square className="w-5 h-5" />
-            Stop Recording
-          </>
-        ) : (
-          <>
-            <Mic className="w-5 h-5" />
-            Start Conversation
-          </>
+      {transcription && (
+        <div className="mt-4 p-4 bg-white/30 rounded-lg max-w-md">
+          <p className="text-gray-700">{transcription}</p>
+        </div>
+      )}
+
+      <div className="flex items-center gap-4 mt-4">
+        <motion.button
+          className={`px-6 py-3 rounded-full text-white font-medium shadow-lg flex items-center gap-2 ${
+            isRecording
+              ? "bg-red-500 hover:bg-red-600"
+              : "bg-gradient-to-r from-blue-400 via-purple-400 to-green-400"
+          }`}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={handleButtonClick}
+          disabled={isUploading || isPlaying}
+        >
+          {isUploading ? (
+            "Processing..."
+          ) : isRecording ? (
+            <>
+              <Square className="w-5 h-5" />
+              Stop Recording
+            </>
+          ) : (
+            <>
+              <Mic className="w-5 h-5" />
+              Start Conversation
+            </>
+          )}
+        </motion.button>
+
+        {audioRef.current && (
+          <motion.button
+            className="px-6 py-3 rounded-full text-white font-medium shadow-lg flex items-center gap-2 bg-purple-500 hover:bg-purple-600"
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={togglePlayback}
+          >
+            {isPlaying ? (
+              <>
+                <Pause className="w-5 h-5" />
+                Pause
+              </>
+            ) : (
+              <>
+                <Play className="w-5 h-5" />
+                Play Response
+              </>
+            )}
+          </motion.button>
         )}
-      </motion.button>
+      </div>
     </div>
   );
 };
@@ -225,8 +293,7 @@ async function audioBufferToWav(buffer: AudioBuffer): Promise<Blob> {
   return new Blob([arrayBuffer], { type: "audio/wav" });
 }
 
-// Helper function to write strings to DataView
-function writeString(view: DataView, offset: number, string: string): void {
+function writeString(view: DataView, offset: number, string: string) {
   for (let i = 0; i < string.length; i++) {
     view.setUint8(offset + i, string.charCodeAt(i));
   }
