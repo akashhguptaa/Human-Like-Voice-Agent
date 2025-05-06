@@ -23,6 +23,7 @@ from utils import load_and_preprocess_audio
 from llama_VAD import query_model
 from dia_tts import get_voices, text_to_speech_vad
 import requests
+import json
 
 WHISPER_MODEL_SIZE = "base"
 VAD_MODEL_ID = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
@@ -271,7 +272,7 @@ async def process_audio_endpoint(
                 vad_result.get("dominance", 0.5),
             ],
         )
-
+        emotional_response = json.loads(emotional_response)
         # Generate TTS audio from Llama response
         voices = get_voices()
         if not voices:
@@ -279,30 +280,31 @@ async def process_audio_endpoint(
                 status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="No voices available for TTS",
             )
+        logger.debug(f"emotional_response: {emotional_response}")
 
-        voice_id = voices[0]["voice_id"]
-        base_filename = "output.wav"
-        counter = 1
-        while os.path.exists(os.path.join("static", base_filename)):
-            base_filename = f"output({counter}).wav"
-            counter += 1
+        # voice_id = voices[0]["voice_id"]
+        # base_filename = "output.wav"
+        # counter = 1
+        # while os.path.exists(os.path.join("static", base_filename)):
+        #     base_filename = f"output({counter}).wav"
+        #     counter += 1
 
-        tts_result = text_to_speech_vad(
-            emotional_response, voice_id, os.path.join("static", base_filename)
-        )
+        # tts_result = text_to_speech_vad(
+        #     emotional_response, voice_id, os.path.join("static", base_filename)
+        # )
 
-        if tts_result["status"] == "error":
-            raise fastapi.HTTPException(
-                status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"TTS generation failed: {tts_result['message']}",
-            )
-
+        # if tts_result["status"] == "error":
+        #     raise fastapi.HTTPException(
+        #         status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR,
+        #         detail=f"TTS generation failed: {tts_result['message']}",
+        #     )
+        logger.debug(f"emotional_response: {type(emotional_response)}")
+        # logger.debug(f"text: {json.loads(emotional_response['response']['s1']['text'])}")
         return {
             "filename": file.filename,
             "transcription": transcription_result,
             "vad_scores": vad_result,
-            "emotional_response": emotional_response,
-            "tts_file": f"static/{base_filename}",
+            "emotional_response": emotional_response['response']['s1']['text'],
         }
 
     except ValueError as ve:

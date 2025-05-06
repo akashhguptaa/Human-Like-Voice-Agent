@@ -62,7 +62,7 @@ async def query_model(user_prompt, vad):
         completion = client.chat.completions.create(
             model=MODEL,
             messages=conversation_history,
-            max_tokens=512,
+            max_tokens=128,
         )
 
         # Extract the response
