@@ -1,6 +1,7 @@
 import React, { useRef, useState, useCallback } from "react";
 import { motion } from "framer-motion";
 import { Mic, Square, Play, Pause } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 interface AudioResponse {
   transcription: string;
@@ -9,10 +10,19 @@ interface AudioResponse {
     dominance: number;
     valence: number;
   };
+  emotional_response: {
+    response: {
+      [key: string]: {
+        text: string;
+        vad: [number, number, number];
+      };
+    };
+  };
   tts_file: string;
 }
 
 export const MainContent = () => {
+  const router = useRouter();
   const [isRecording, setIsRecording] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -73,7 +83,17 @@ export const MainContent = () => {
           }
 
           const data = await response.json();
-          console.log("Received response:", data);
+
+          console.log(data);
+          console.log(data.emotional_response);
+          // Navigate to response page with the data
+          const searchParams = new URLSearchParams({
+            transcription: data.transcription,
+            vad_scores: JSON.stringify(data.vad_scores),
+            emotional_response: JSON.stringify(data.emotional_response),
+          });
+
+          router.push(`/response?${searchParams.toString()}`);
 
           // Update state with transcription
           setTranscription(data.transcription);
@@ -114,7 +134,7 @@ export const MainContent = () => {
       console.error("Error starting recording:", error);
       setIsRecording(false);
     }
-  }, [audioUrl]);
+  }, [router]);
 
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && isRecording) {
@@ -147,7 +167,9 @@ export const MainContent = () => {
 
   return (
     <div className="flex flex-col items-center z-10 bg-white/20 backdrop-blur-sm p-10 rounded-2xl shadow-lg mt-8">
-      <h1 className="text-4xl font-bold text-gray-800 mb-2">MANAS-AI</h1>
+      <h1 className="text-4xl font-bold text-gray-800 mb-2">
+        Human-like Voice Assistant
+      </h1>
       <p className="text-lg text-gray-600 max-w-md text-center">
         Experience conversations with AI that feel remarkably human
       </p>
